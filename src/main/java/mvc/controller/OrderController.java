@@ -8,6 +8,8 @@ import java.io.Reader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Base64;
 
@@ -48,6 +50,7 @@ public class OrderController extends HttpServlet {
 		req.setCharacterEncoding("utf-8");
 		
 		System.out.println("command : " + command);
+		System.out.println("orderNo : " + getOrderNo(req));
 		
 		if (command.contains("form.do")) { // 주문서 / 배송정보 입력 페이지
 			setOrderData(req);
@@ -95,7 +98,7 @@ public class OrderController extends HttpServlet {
 		
 		else if (command.contains("orderDone.do")) {	// 결제 완료
 			// order_data에 있는 cartId 기준으로 장바구니에 있는 상품을 삭제
-			deleteCartWhenOrderDone(getOrderNo(req));
+			deleteCartWhenOrderDone(req);
 			
 			// 상단에 출력할 장바구니 목록
 			ArrayList<OrderDataDTO> datas = getOrderData(getOrderNo(req));
@@ -108,6 +111,10 @@ public class OrderController extends HttpServlet {
 			info.setOrderStep(orderStep.getStep());
 			req.setAttribute("info", info);
 			
+			// 주문번호 삭제
+			HttpSession session = req.getSession();
+			session.removeAttribute("orderNo");
+			
 			req.getRequestDispatcher("/WEB-INF/order/orderDone.jsp").forward(req, resp);
 		}
 	}
@@ -117,10 +124,20 @@ public class OrderController extends HttpServlet {
 		/* 주문 번호 반환
 		 1. 주문번호 사용 때문에 코드 반복이 되어서
 		 2. 주문번호 체계가 변할 경우를 대비해 메서드화
+		 HttpSession session = req.getSession();
+		 return session.getId();
 		 */
 		
+		// 변경 : 주문번호를 세션에 값 orderNo으로 저장
+		// 1) 세션에 orderNo으로 저장된 값이 있으면 반환
+		// 2) null이면 생성 후 세션에 저장 후 반환
 		HttpSession session = req.getSession();	// 세션 사용을 위해 생성
-		return session.getId();
+		String orderNo = (String) session.getAttribute("orderNo");
+		if (orderNo == null) {
+			orderNo = generateOrderNo(req);
+			session.setAttribute("orderNo", orderNo);
+		}
+		return orderNo;
 	}
 	
 	private ArrayList<OrderDataDTO> getOrderData(String orderNo) {
@@ -143,8 +160,11 @@ public class OrderController extends HttpServlet {
 		dao.clearOrderData(orderNo);
 		
 		// 2. 주문번호 기준으로 장바구니에 있는 상품을 가지고 옴
+		// --> 세션 아이디 기준으로 장바구니에 있는 상품을 가지고 옴
 		CartDAO cartDAO = new CartDAO();
-		ArrayList<Cart> carts = cartDAO.getCartList(orderNo);
+//		ArrayList<Cart> carts = cartDAO.getCartList(orderNo);
+		HttpSession session = req.getSession();
+		ArrayList<Cart> carts = cartDAO.getCartList(session.getId());
 		System.out.println(carts);
 		
 		// 3. CartList를 OrderData List로 변경
@@ -306,18 +326,35 @@ public class OrderController extends HttpServlet {
 		return dao.updateOrderInfoWhenProcessSuccess(dto);
 	}
 	
-	private void deleteCartWhenOrderDone (String orderNo) {
+	private void deleteCartWhenOrderDone (HttpServletRequest request) {
 		// 주문 처리가 완료된 후 order_data에 있는 cartId 기준으로 장바구니 삭제
 		OrderDAO orderDAO = OrderDAO.getInstance();
 		CartDAO cartDAO = new CartDAO();
 		
-		ArrayList<OrderDataDTO> dtos = orderDAO.selectAllOrderData(orderNo);
+		HttpSession session = request.getSession();
+		
+		ArrayList<OrderDataDTO> dtos = orderDAO.selectAllOrderData(getOrderNo(request));
 		for (OrderDataDTO dto : dtos) {
 			try {
-				cartDAO.deleteCartById(orderNo, dto.getCartId());
+				cartDAO.deleteCartById(session.getId(), dto.getCartId());
 			} catch (Exception ex) {
 				ex.printStackTrace();
 			}
 		}
+	}
+	
+	public String generateOrderNo(HttpServletRequest request) {
+		/* 주문번호 생성 : 주문번호의 가장 중요한 점은 중복 가능성을 없애는 것
+		 현재 날짜 시간과 세션 키의 조합으로 주문 번호 생성
+		 장점 : 주문번호만으로 주문날짜 추정이 가능
+		 테이블의 primary 키가 주문 번호인 경우 어느 정도 정렬이 가능
+		 */
+		// 현재 날짜 시간 구하기
+		LocalDateTime now = LocalDateTime.now();
+		String nowStr = now.format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
+		
+		HttpSession session = request.getSession();
+		// 주문 번호에서 세션키 추출이 쉽도록 구분자(-) 추가
+		return nowStr + "-" + session.getId();
 	}
 }
